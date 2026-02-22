@@ -102,6 +102,10 @@ export async function discoverPairs() {
   }
 
   // Step 3: Filter
+  const now = Date.now();
+  const MIN_AGE_MS = 2 * 3600_000;    // 2 hours
+  const MAX_AGE_MS = 1000 * 3600_000;  // 1000 hours
+
   const filtered = rawPairs.filter((p) => {
     if (p.chainId !== "solana") return false;
 
@@ -116,6 +120,11 @@ export async function discoverPairs() {
 
     const vol24 = p.volume?.h24 ?? 0;
     if (vol24 < 50000) return false;
+
+    const createdAt = p.pairCreatedAt ?? 0;
+    if (!createdAt) return false;
+    const ageMs = now - createdAt;
+    if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
 
     return true;
   });

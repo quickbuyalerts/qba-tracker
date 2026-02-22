@@ -220,6 +220,21 @@ async function runOhlcvUpdate() {
     broadcast("update", { pairs: updated, stats: getStats() });
   }
   console.log(`[${new Date().toISOString()}] OHLCV updated for ${updated.length} pairs`);
+
+  // RSI filter: remove pairs where RSI is outside 25-35 range
+  // Only filter if both RSI values have been calculated
+  let rsiRemoved = 0;
+  for (const [addr, p] of pairs) {
+    if (p.rsi5m == null || p.rsi15m == null) continue;
+    if (p.rsi5m < 25 || p.rsi5m > 35 || p.rsi15m < 25 || p.rsi15m > 35) {
+      pairs.delete(addr);
+      rsiRemoved++;
+    }
+  }
+  if (rsiRemoved > 0) {
+    console.log(`[${new Date().toISOString()}] RSI filter removed ${rsiRemoved} pairs, ${pairs.size} remaining`);
+    broadcast("snapshot", getSnapshot());
+  }
 }
 
 function aggregate15m(candles5m) {
