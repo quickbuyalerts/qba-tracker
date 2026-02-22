@@ -55,9 +55,6 @@ export async function discoverPairs() {
   }
 
   const rawPairs = data?.pairs || [];
-  const now = Date.now();
-  const MIN_AGE_MS = 4 * 3600_000;    // 4 hours
-  const MAX_AGE_MS = 1000 * 3600_000; // 1000 hours
 
   console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from API`);
 
@@ -69,25 +66,14 @@ export async function discoverPairs() {
   const filtered = rawPairs.filter((p) => {
     if (p.chainId !== "solana") return false;
 
-    const dex = (p.dexId || "").toLowerCase();
-    if (dex !== "pumpswap" && dex !== "pumpfun") return false;
-
     const liq = p.liquidity?.usd ?? 0;
-    if (liq < 10000) return false;
+    if (liq < 5000) return false;
 
     const fdv = p.fdv ?? 0;
-    if (fdv < 30000) return false;
+    if (fdv < 10000) return false;
 
     const vol24 = p.volume?.h24 ?? 0;
-    if (vol24 < 80000 || vol24 > 180000) return false;
-
-    const vol6 = p.volume?.h6 ?? 0;
-    if (vol6 > 50000) return false;
-
-    const createdAt = p.pairCreatedAt ?? 0;
-    if (!createdAt) return false;
-    const ageMs = now - createdAt;
-    if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
+    if (vol24 < 10000) return false;
 
     return true;
   });
