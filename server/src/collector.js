@@ -208,10 +208,14 @@ async function runOhlcvUpdate() {
       pairs.set(addr, existing);
       updated.push(existing);
 
-      // Stagger: 2s between pairs
-      await new Promise((r) => setTimeout(r, 2000));
+      // Stagger: 8s between pairs to avoid GeckoTerminal rate limits
+      await new Promise((r) => setTimeout(r, 8000));
     } catch (err) {
       console.error(`[${new Date().toISOString()}] OHLCV error for ${addr}:`, err.message);
+      if (err.message?.includes("429")) {
+        console.log(`[${new Date().toISOString()}] Rate limited by GeckoTerminal, waiting 30s`);
+        await new Promise((r) => setTimeout(r, 30000));
+      }
     }
   }
 

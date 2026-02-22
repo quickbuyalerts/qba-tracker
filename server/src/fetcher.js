@@ -112,8 +112,8 @@ export async function discoverPairs() {
     const dex = (p.dexId || "").toLowerCase();
     if (dex !== "pumpswap" && dex !== "pumpfun") return false;
 
-    const liq = p.liquidity?.usd ?? 0;
-    if (liq < 10000) return false;
+    const liq = p.liquidity?.usd;
+    if (liq != null && liq < 10000) return false;
 
     const fdv = p.fdv ?? 0;
     if (fdv < 30000) return false;
