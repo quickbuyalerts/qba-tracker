@@ -61,6 +61,11 @@ export async function discoverPairs() {
 
   console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from API`);
 
+  // Log key fields for first 5 raw pairs
+  for (const p of rawPairs.slice(0, 5)) {
+    console.log(`[${new Date().toISOString()}] RAW PAIR: dexId=${p.dexId} chainId=${p.chainId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24}`);
+  }
+
   const filtered = rawPairs.filter((p) => {
     if (p.chainId !== "solana") return false;
 
