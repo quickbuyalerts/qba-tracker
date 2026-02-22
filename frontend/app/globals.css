@@ -303,6 +303,50 @@ td:first-child {
   text-transform: uppercase;
 }
 
+/* Copy address */
+.copy-addr {
+  cursor: pointer;
+  position: relative;
+  transition: color 0.2s;
+}
+.copy-addr:hover {
+  color: var(--accent);
+}
+.copy-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: fadeTooltip 1.5s ease-out forwards;
+}
+@keyframes fadeTooltip {
+  0%, 60% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Sparkline popup */
+.sparkline-popup {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%) translateX(100%);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  z-index: 50;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+
 /* RSI badge */
 .rsi-cell {
   display: flex;

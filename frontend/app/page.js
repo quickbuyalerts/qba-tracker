@@ -39,6 +39,48 @@ function truncAddr(addr) {
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
 }
 
+function CopyAddress({ addr }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(addr);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
+  };
+  return (
+    <span className="copy-addr" onClick={handleCopy} title={addr}>
+      {truncAddr(addr)}
+      {copied && <span className="copy-tooltip">Copied!</span>}
+    </span>
+  );
+}
+
+function Sparkline({ candles }) {
+  if (!candles || candles.length < 2) {
+    return <span style={{ color: "var(--text-dim)", fontSize: 11 }}>Chart loading...</span>;
+  }
+  const closes = candles.slice(-20).map((c) => c.c);
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const w = 120;
+  const h = 40;
+  const pad = 2;
+  const points = closes.map((v, i) => {
+    const x = pad + (i / (closes.length - 1)) * (w - pad * 2);
+    const y = pad + (1 - (v - min) / range) * (h - pad * 2);
+    return `${x},${y}`;
+  }).join(" ");
+  const color = closes[closes.length - 1] >= closes[0] ? "var(--accent)" : "var(--red)";
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
+    </svg>
+  );
+}
+
 function getRsiClass(rsi) {
   if (rsi == null) return "neutral";
   if (rsi > 70) return "overbought";
@@ -99,6 +141,7 @@ export default function Home() {
   const [rsiTimeframe, setRsiTimeframe] = useState("5m");
   const [flashedRows, setFlashedRows] = useState(new Set());
   const [refreshKey, setRefreshKey] = useState(0);
+  const [hoveredRow, setHoveredRow] = useState(null);
   const eventSourceRef = useRef(null);
   const reconnectTimeoutRef = useRef(null);
 
@@ -329,6 +372,9 @@ export default function Home() {
                   <tr
                     key={pair.pairAddress}
                     className={flashedRows.has(pair.pairAddress) ? "flash-row" : ""}
+                    onMouseEnter={() => setHoveredRow(pair.pairAddress)}
+                    onMouseLeave={() => setHoveredRow(null)}
+                    style={{ position: "relative" }}
                   >
                     {/* Token */}
                     <td>
@@ -349,7 +395,7 @@ export default function Home() {
                           <span className="token-symbol">{pair.baseToken?.symbol || "???"}</span>
                           <div className="token-meta">
                             {pair.dexId && <span className="dex-tag">{pair.dexId}</span>}
-                            <span>{truncAddr(pair.pairAddress)}</span>
+                            <CopyAddress addr={pair.pairAddress} />
                           </div>
                         </div>
                       </div>
@@ -396,7 +442,14 @@ export default function Home() {
                     {/* ATH */}
                     <td>{formatPrice(pair.ath)}</td>
                     {/* Age */}
-                    <td>{formatAge(pair.pairCreatedAt)}</td>
+                    <td>
+                      {formatAge(pair.pairCreatedAt)}
+                      {hoveredRow === pair.pairAddress && (
+                        <div className="sparkline-popup">
+                          <Sparkline candles={pair.candles5m} />
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
