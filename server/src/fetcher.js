@@ -100,6 +100,11 @@ export async function discoverPairs() {
   for (const p of rawPairs.slice(0, 5)) {
     console.log(`[${new Date().toISOString()}] RAW PAIR: dexId=${p.dexId} chainId=${p.chainId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24}`);
   }
+  // Log pairCreatedAt for first 3 pairs
+  for (const p of rawPairs.slice(0, 3)) {
+    const ageH = p.pairCreatedAt ? ((Date.now() - p.pairCreatedAt) / 3600_000).toFixed(1) : "N/A";
+    console.log(`[${new Date().toISOString()}] PAIR AGE: ${p.baseToken?.symbol} pairCreatedAt=${p.pairCreatedAt} (type=${typeof p.pairCreatedAt}) age=${ageH}h`);
+  }
 
   // Step 3: Filter
   const now = Date.now();
@@ -121,9 +126,9 @@ export async function discoverPairs() {
     const vol24 = p.volume?.h24 ?? 0;
     if (vol24 < 50000) return false;
 
-    const createdAt = p.pairCreatedAt ?? 0;
-    if (!createdAt) return false;
-    const ageMs = now - createdAt;
+    // Age filter: require pairCreatedAt to be a positive number
+    if (typeof p.pairCreatedAt !== "number" || p.pairCreatedAt <= 0) return false;
+    const ageMs = now - p.pairCreatedAt;
     if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
 
     return true;
