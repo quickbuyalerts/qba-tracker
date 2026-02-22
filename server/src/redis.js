@@ -29,6 +29,17 @@ export async function persistState(pairsMap) {
   }
 }
 
+export async function clearPairs() {
+  const r = getRedis();
+  if (!r) return;
+  try {
+    await r.del(PAIRS_KEY);
+    console.log(`[${new Date().toISOString()}] Cleared pair data from Redis`);
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Redis clear error:`, err.message);
+  }
+}
+
 export async function restoreState() {
   const r = getRedis();
   if (!r) return new Map();

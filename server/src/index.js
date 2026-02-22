@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { startCollector, getSnapshot, getStats, registerSSEClient, removeSSEClient } from "./collector.js";
+import { clearPairs } from "./redis.js";
 
 const PORT = parseInt(process.env.PORT || "3001", 10);
 
@@ -59,6 +60,7 @@ fastify.get("/api/stream", (request, reply) => {
 
 // Start
 try {
+  await clearPairs();
   await startCollector();
   await fastify.listen({ port: PORT, host: "0.0.0.0" });
   console.log(`[${new Date().toISOString()}] Server listening on port ${PORT}`);
