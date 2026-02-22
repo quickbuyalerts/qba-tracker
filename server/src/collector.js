@@ -92,8 +92,29 @@ async function runDiscovery() {
       return;
     }
 
+    // Strict client-side filtering
+    const counts = { total: rawPairs.length, chainId: 0, dexId: 0, liquidity: 0, fdv: 0, volume: 0 };
+    const filtered = rawPairs.filter((p) => {
+      if (p.chainId !== "solana") { counts.chainId++; return false; }
+      const dex = (p.dexId || "").toLowerCase();
+      if (dex !== "pumpswap" && dex !== "pumpfun") { counts.dexId++; return false; }
+      const liq = p.liquidity?.usd;
+      if (liq == null || liq < 10000) { counts.liquidity++; return false; }
+      const fdv = p.fdv ?? 0;
+      if (fdv < 30000) { counts.fdv++; return false; }
+      const vol24 = p.volume?.h24 ?? 0;
+      if (vol24 < 80000 || vol24 > 180000) { counts.volume++; return false; }
+      return true;
+    });
+    console.log(`[${new Date().toISOString()}] Filter: ${counts.total} raw → ${filtered.length} passed | removed: chainId=${counts.chainId} dexId=${counts.dexId} liq=${counts.liquidity} fdv=${counts.fdv} vol=${counts.volume}`);
+
+    if (!filtered.length) {
+      console.log(`[${new Date().toISOString()}] All pairs filtered out, keeping existing`);
+      return;
+    }
+
     const discoveredAddrs = new Set();
-    for (const raw of rawPairs) {
+    for (const raw of filtered) {
       const addr = raw.pairAddress || raw.address;
       if (!addr) continue;
       discoveredAddrs.add(addr);
