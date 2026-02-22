@@ -31,66 +31,65 @@ async function fetchWithRetry(url, limiter, retries = MAX_RETRIES) {
   }
 }
 
+let isFirstDiscovery = true;
+
 /**
- * Discover pairs from Dexscreener.
- * Primary: io.dexscreener.com search endpoint (has filters).
- * Fallback: official token search API (broader results, client-side filter).
+ * Discover pairs via official Dexscreener search API with client-side filtering.
  */
 export async function discoverPairs() {
-  // Try the search endpoint first
-  try {
-    const url =
-      "https://io.dexscreener.com/dex/search/pairs/solana?dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=48&maxAge=480&min24HVol=80000&max24HVol=180000&max6HVol=50000&profile=0&launchpads=1";
-    const data = await fetchWithRetry(url, discoveryLimiter, 1);
-    if (data && (data.pairs?.length || data.results?.length)) {
-      return data;
+  const url = "https://api.dexscreener.com/latest/dex/search?q=SOL";
+  const data = await fetchWithRetry(url, discoveryLimiter);
+
+  // Log full raw response structure on first call
+  if (isFirstDiscovery) {
+    isFirstDiscovery = false;
+    const samplePair = data?.pairs?.[0];
+    console.log(`[${new Date().toISOString()}] === FIRST DISCOVERY RAW RESPONSE ===`);
+    console.log(`[${new Date().toISOString()}] Top-level keys: ${Object.keys(data || {}).join(", ")}`);
+    console.log(`[${new Date().toISOString()}] pairs count: ${data?.pairs?.length ?? "N/A"}`);
+    if (samplePair) {
+      console.log(`[${new Date().toISOString()}] Sample pair keys: ${Object.keys(samplePair).join(", ")}`);
+      console.log(`[${new Date().toISOString()}] Sample pair: ${JSON.stringify(samplePair, null, 2)}`);
     }
-  } catch {
-    // Fall through to fallback
+    console.log(`[${new Date().toISOString()}] === END RAW RESPONSE ===`);
   }
 
-  // Fallback: use official Dexscreener token search for Solana memecoins
-  console.log(`[${new Date().toISOString()}] Using fallback discovery via official API`);
-  const searches = ["pumpfun solana", "pumpswap solana"];
-  const allPairs = [];
-  const seen = new Set();
+  const rawPairs = data?.pairs || [];
+  const now = Date.now();
+  const MIN_AGE_MS = 48 * 3600_000;  // 48 hours
+  const MAX_AGE_MS = 480 * 3600_000; // 480 hours
 
-  for (const query of searches) {
-    try {
-      const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(query)}`;
-      const data = await fetchWithRetry(url, discoveryLimiter, 2);
-      if (data?.pairs) {
-        for (const p of data.pairs) {
-          if (p.chainId !== "solana") continue;
-          if (seen.has(p.pairAddress)) continue;
-          // Apply filters client-side
-          const liq = p.liquidity?.usd ?? 0;
-          const mcap = p.marketCap ?? p.fdv ?? 0;
-          const vol24 = p.volume?.h24 ?? 0;
-          const ageMin = p.pairCreatedAt
-            ? (Date.now() - p.pairCreatedAt) / 60000
-            : 0;
-          const dex = p.dexId || "";
-          if (
-            (dex.includes("pump") || dex.includes("raydium")) &&
-            liq >= 10000 &&
-            mcap >= 30000 &&
-            vol24 >= 80000 &&
-            vol24 <= 180000 &&
-            ageMin >= 48 &&
-            ageMin <= 480
-          ) {
-            seen.add(p.pairAddress);
-            allPairs.push(p);
-          }
-        }
-      }
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Fallback search "${query}" error:`, err.message);
-    }
-  }
+  console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from API`);
 
-  return { pairs: allPairs };
+  const filtered = rawPairs.filter((p) => {
+    if (p.chainId !== "solana") return false;
+
+    const dex = (p.dexId || "").toLowerCase();
+    if (dex !== "pumpswap" && dex !== "pumpfun") return false;
+
+    const liq = p.liquidity?.usd ?? 0;
+    if (liq < 10000) return false;
+
+    const fdv = p.fdv ?? 0;
+    if (fdv < 30000) return false;
+
+    const vol24 = p.volume?.h24 ?? 0;
+    if (vol24 < 80000 || vol24 > 180000) return false;
+
+    const vol6 = p.volume?.h6 ?? 0;
+    if (vol6 > 50000) return false;
+
+    const createdAt = p.pairCreatedAt ?? 0;
+    if (!createdAt) return false;
+    const ageMs = now - createdAt;
+    if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
+
+    return true;
+  });
+
+  console.log(`[${new Date().toISOString()}] Discovery: ${filtered.length} pairs after filtering`);
+
+  return { pairs: filtered };
 }
 
 /**
