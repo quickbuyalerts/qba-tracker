@@ -259,7 +259,7 @@ export default function Home() {
         <span className="filter-tag">PumpSwap + PumpFun</span>
         <span className="filter-tag">Liq &gt; $10K</span>
         <span className="filter-tag">MCap &gt; $30K</span>
-        <span className="filter-tag">Age 48-480min</span>
+        <span className="filter-tag">Age 48-480h</span>
         <span className="filter-tag">24h Vol $80K-$180K</span>
         <span style={{ marginLeft: "auto", color: "var(--text-dim)" }}>
           {stats?.totalPairs ?? 0} pairs tracked
