@@ -33,20 +33,40 @@ async function fetchWithRetry(url, limiter, retries = MAX_RETRIES) {
 
 let isFirstDiscovery = true;
 
+const SEARCH_QUERIES = ["pump", "sol", "meme", "cat", "dog"];
+const MIN_AGE_MS = 48 * 3600_000;   // 48 hours
+const MAX_AGE_MS = 480 * 3600_000;  // 480 hours
+
 /**
  * Discover pairs via official Dexscreener search API with client-side filtering.
+ * Runs multiple search queries in parallel and deduplicates by pairAddress.
  */
 export async function discoverPairs() {
-  const url = "https://api.dexscreener.com/latest/dex/search?q=SOL";
-  const data = await fetchWithRetry(url, discoveryLimiter);
+  // Fetch all queries in parallel
+  const results = await Promise.allSettled(
+    SEARCH_QUERIES.map((q) =>
+      fetchWithRetry(`https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`, discoveryLimiter)
+    )
+  );
 
-  // Log full raw response structure on first call
+  // Deduplicate by pairAddress
+  const seen = new Set();
+  const rawPairs = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled" || !r.value?.pairs) continue;
+    for (const p of r.value.pairs) {
+      if (!seen.has(p.pairAddress)) {
+        seen.add(p.pairAddress);
+        rawPairs.push(p);
+      }
+    }
+  }
+
+  // Log raw response structure on first call
   if (isFirstDiscovery) {
     isFirstDiscovery = false;
-    const samplePair = data?.pairs?.[0];
+    const samplePair = rawPairs[0];
     console.log(`[${new Date().toISOString()}] === FIRST DISCOVERY RAW RESPONSE ===`);
-    console.log(`[${new Date().toISOString()}] Top-level keys: ${Object.keys(data || {}).join(", ")}`);
-    console.log(`[${new Date().toISOString()}] pairs count: ${data?.pairs?.length ?? "N/A"}`);
     if (samplePair) {
       console.log(`[${new Date().toISOString()}] Sample pair keys: ${Object.keys(samplePair).join(", ")}`);
       console.log(`[${new Date().toISOString()}] Sample pair: ${JSON.stringify(samplePair, null, 2)}`);
@@ -54,26 +74,33 @@ export async function discoverPairs() {
     console.log(`[${new Date().toISOString()}] === END RAW RESPONSE ===`);
   }
 
-  const rawPairs = data?.pairs || [];
-
-  console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from API`);
+  console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} deduplicated raw pairs from ${SEARCH_QUERIES.length} queries`);
 
   // Log key fields for first 5 raw pairs
   for (const p of rawPairs.slice(0, 5)) {
     console.log(`[${new Date().toISOString()}] RAW PAIR: dexId=${p.dexId} chainId=${p.chainId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24}`);
   }
 
+  const now = Date.now();
   const filtered = rawPairs.filter((p) => {
     if (p.chainId !== "solana") return false;
 
+    const dex = (p.dexId || "").toLowerCase();
+    if (dex !== "pumpswap" && dex !== "pumpfun") return false;
+
     const liq = p.liquidity?.usd ?? 0;
-    if (liq < 5000) return false;
+    if (liq < 10000) return false;
 
     const fdv = p.fdv ?? 0;
-    if (fdv < 10000) return false;
+    if (fdv < 30000) return false;
 
     const vol24 = p.volume?.h24 ?? 0;
-    if (vol24 < 10000) return false;
+    if (vol24 < 50000) return false;
+
+    const createdAt = p.pairCreatedAt ?? 0;
+    if (!createdAt) return false;
+    const ageMs = now - createdAt;
+    if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
 
     return true;
   });
