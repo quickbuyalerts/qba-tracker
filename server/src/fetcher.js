@@ -10,7 +10,10 @@ async function fetchWithRetry(url, limiter, retries = MAX_RETRIES) {
       const res = await fetch(url, {
         headers: {
           Accept: "application/json",
-          "User-Agent": "Mozilla/5.0 (compatible; QBATracker/1.0)",
+          "User-Agent":
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Referer: "https://dexscreener.com/",
+          Origin: "https://dexscreener.com",
         },
         signal: AbortSignal.timeout(15000),
       });
@@ -31,112 +34,104 @@ async function fetchWithRetry(url, limiter, retries = MAX_RETRIES) {
   }
 }
 
-let isFirstDiscovery = true;
+const DISCOVERY_ENDPOINTS = [
+  {
+    name: "io-internal",
+    url: "https://io.dexscreener.com/dex/search/pairs/solana?rankBy=trendingScoreH6&order=desc&dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=2&maxAge=1000&min24HVol=80000&max24HVol=180000&profile=0&launchpads=1",
+    extract: (data) => data?.pairs || data?.results || [],
+  },
+  {
+    name: "io-page-api",
+    url: "https://io.dexscreener.com/dex/search/pairs/solana?dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=2&maxAge=1000&min24HVol=80000&max24HVol=180000",
+    extract: (data) => data?.pairs || data?.results || [],
+  },
+  {
+    name: "official-search-combined",
+    url: null, // special: runs multiple searches
+    extract: null,
+  },
+];
 
 /**
- * Discover pairs via Dexscreener token-profiles + tokens lookup.
- * 1. Fetch latest token profiles to get recently active token addresses.
- * 2. Look up all pairs for those tokens in batches of 30.
- * 3. Filter for pumpswap/pumpfun Solana pairs matching criteria.
+ * Discover pairs by trying multiple Dexscreener endpoints in order.
+ * io.dexscreener.com endpoints do server-side filtering.
+ * Official search API fallback uses multiple queries + dedup.
  */
 export async function discoverPairs() {
-  // Step 1: Get latest token profiles
-  const profiles = await fetchWithRetry(
-    "https://api.dexscreener.com/token-profiles/latest/v1",
-    discoveryLimiter
-  );
-
-  // Extract unique Solana token addresses
-  const tokenAddrs = new Set();
-  const profileList = Array.isArray(profiles) ? profiles : profiles?.data || [];
-  for (const p of profileList) {
-    if (p.chainId === "solana" && p.tokenAddress) {
-      tokenAddrs.add(p.tokenAddress);
-    }
-  }
-
-  if (isFirstDiscovery) {
-    isFirstDiscovery = false;
-    const sample = profileList[0];
-    console.log(`[${new Date().toISOString()}] === FIRST PROFILE RESPONSE ===`);
-    console.log(`[${new Date().toISOString()}] Profile array length: ${profileList.length}`);
-    if (sample) {
-      console.log(`[${new Date().toISOString()}] Sample profile keys: ${Object.keys(sample).join(", ")}`);
-      console.log(`[${new Date().toISOString()}] Sample profile: ${JSON.stringify(sample, null, 2)}`);
-    }
-    console.log(`[${new Date().toISOString()}] === END PROFILE RESPONSE ===`);
-  }
-
-  console.log(`[${new Date().toISOString()}] Discovery: ${profileList.length} profiles, ${tokenAddrs.size} unique Solana token addresses`);
-
-  // Step 2: Fetch pairs for tokens in batches of 30
-  const addrs = Array.from(tokenAddrs);
-  const rawPairs = [];
-  const seenPairs = new Set();
-
-  for (let i = 0; i < addrs.length; i += 30) {
-    const batch = addrs.slice(i, i + 30).join(",");
+  for (const endpoint of DISCOVERY_ENDPOINTS) {
     try {
-      const data = await fetchWithRetry(
-        `https://api.dexscreener.com/latest/dex/tokens/${batch}`,
-        dexLimiter
-      );
-      if (data?.pairs) {
-        for (const p of data.pairs) {
-          if (!seenPairs.has(p.pairAddress)) {
-            seenPairs.add(p.pairAddress);
-            rawPairs.push(p);
-          }
-        }
+      console.log(`[${new Date().toISOString()}] Discovery: trying ${endpoint.name}...`);
+
+      // Special handling for combined official search fallback
+      if (endpoint.name === "official-search-combined") {
+        const result = await discoverViaOfficialSearch();
+        if (result.length > 0) return { pairs: result };
+        continue;
+      }
+
+      const data = await fetchWithRetry(endpoint.url, discoveryLimiter, 1);
+
+      const pairs = endpoint.extract(data);
+      // Only keep Solana pairs with a valid pairAddress
+      const valid = pairs.filter((p) => p.pairAddress && (p.chainId === "solana" || !p.chainId));
+
+      console.log(`[${new Date().toISOString()}] Discovery: ${endpoint.name} returned ${pairs.length} total, ${valid.length} solana pairs`);
+
+      // Log first 3 pairs
+      for (const p of valid.slice(0, 3)) {
+        console.log(`[${new Date().toISOString()}]   ${p.baseToken?.symbol || "?"} | dex=${p.dexId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24} addr=${p.pairAddress?.slice(0, 8)}...`);
+      }
+
+      if (valid.length > 0) {
+        console.log(`[${new Date().toISOString()}] Discovery: using ${endpoint.name} (${valid.length} pairs)`);
+        return { pairs: valid };
       }
     } catch (err) {
-      console.error(`[${new Date().toISOString()}] Token batch error:`, err.message);
+      console.error(`[${new Date().toISOString()}] Discovery: ${endpoint.name} failed: ${err.message}`);
     }
   }
 
-  console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from token lookups`);
+  console.log(`[${new Date().toISOString()}] Discovery: all endpoints failed, returning empty`);
+  return { pairs: [] };
+}
 
-  // Log key fields for first 5 raw pairs
-  for (const p of rawPairs.slice(0, 5)) {
-    console.log(`[${new Date().toISOString()}] RAW PAIR: dexId=${p.dexId} chainId=${p.chainId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24}`);
+const SEARCH_QUERIES = ["pump", "pumpswap", "pumpfun", "sol meme", "doge", "pepe", "cat", "dog", "ai", "trump"];
+
+/**
+ * Fallback: search official API with multiple queries, deduplicate,
+ * then keep only pumpswap/pumpfun Solana pairs.
+ */
+async function discoverViaOfficialSearch() {
+  const results = await Promise.allSettled(
+    SEARCH_QUERIES.map((q) =>
+      fetchWithRetry(
+        `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(q)}`,
+        discoveryLimiter
+      )
+    )
+  );
+
+  const seen = new Set();
+  const allPairs = [];
+  for (const r of results) {
+    if (r.status !== "fulfilled" || !r.value?.pairs) continue;
+    for (const p of r.value.pairs) {
+      if (!p.pairAddress || seen.has(p.pairAddress)) continue;
+      if (p.chainId !== "solana") continue;
+      const dex = (p.dexId || "").toLowerCase();
+      if (dex !== "pumpswap" && dex !== "pumpfun") continue;
+      seen.add(p.pairAddress);
+      allPairs.push(p);
+    }
   }
-  // Log pairCreatedAt for first 3 pairs
-  for (const p of rawPairs.slice(0, 3)) {
-    const ageH = p.pairCreatedAt ? ((Date.now() - p.pairCreatedAt) / 3600_000).toFixed(1) : "N/A";
-    console.log(`[${new Date().toISOString()}] PAIR AGE: ${p.baseToken?.symbol} pairCreatedAt=${p.pairCreatedAt} (type=${typeof p.pairCreatedAt}) age=${ageH}h`);
+
+  console.log(`[${new Date().toISOString()}] Discovery: official-search-combined found ${allPairs.length} pumpswap/pumpfun solana pairs from ${SEARCH_QUERIES.length} queries`);
+
+  for (const p of allPairs.slice(0, 3)) {
+    console.log(`[${new Date().toISOString()}]   ${p.baseToken?.symbol || "?"} | dex=${p.dexId} liq=${p.liquidity?.usd} fdv=${p.fdv} vol24=${p.volume?.h24} addr=${p.pairAddress?.slice(0, 8)}...`);
   }
 
-  // Step 3: Filter
-  const now = Date.now();
-  const MIN_AGE_MS = 2 * 3600_000;    // 2 hours
-  const MAX_AGE_MS = 1000 * 3600_000;  // 1000 hours
-
-  const filtered = rawPairs.filter((p) => {
-    if (p.chainId !== "solana") return false;
-
-    const dex = (p.dexId || "").toLowerCase();
-    if (dex !== "pumpswap" && dex !== "pumpfun") return false;
-
-    const liq = p.liquidity?.usd;
-    if (liq != null && liq < 10000) return false;
-
-    const fdv = p.fdv ?? 0;
-    if (fdv < 30000) return false;
-
-    const vol24 = p.volume?.h24 ?? 0;
-    if (vol24 < 50000) return false;
-
-    // Age filter: require pairCreatedAt to be a positive number
-    if (typeof p.pairCreatedAt !== "number" || p.pairCreatedAt <= 0) return false;
-    const ageMs = now - p.pairCreatedAt;
-    if (ageMs < MIN_AGE_MS || ageMs > MAX_AGE_MS) return false;
-
-    return true;
-  });
-
-  console.log(`[${new Date().toISOString()}] Discovery: ${filtered.length} pairs after filtering`);
-
-  return { pairs: filtered };
+  return allPairs;
 }
 
 /**
