@@ -92,21 +92,25 @@ async function runDiscovery() {
       return;
     }
 
-    // Strict client-side filtering
+    // Strict client-side filtering — undefined/missing means EXCLUDE
     const counts = { total: rawPairs.length, chainId: 0, dexId: 0, liquidity: 0, fdv: 0, volume: 0 };
-    const filtered = rawPairs.filter((p) => {
+    let filtered = rawPairs.filter((p) => {
       if (p.chainId !== "solana") { counts.chainId++; return false; }
       const dex = (p.dexId || "").toLowerCase();
       if (dex !== "pumpswap" && dex !== "pumpfun") { counts.dexId++; return false; }
-      const liq = p.liquidity?.usd;
-      if (liq == null || liq < 10000) { counts.liquidity++; return false; }
-      const fdv = p.fdv ?? 0;
-      if (fdv < 30000) { counts.fdv++; return false; }
-      const vol24 = p.volume?.h24 ?? 0;
-      if (vol24 < 80000 || vol24 > 180000) { counts.volume++; return false; }
+      if (typeof p.liquidity?.usd !== "number" || p.liquidity.usd < 10000) { counts.liquidity++; return false; }
+      if (typeof p.fdv !== "number" || p.fdv < 30000) { counts.fdv++; return false; }
+      if (typeof p.volume?.h24 !== "number" || p.volume.h24 < 80000 || p.volume.h24 > 180000) { counts.volume++; return false; }
       return true;
     });
     console.log(`[${new Date().toISOString()}] Filter: ${counts.total} raw → ${filtered.length} passed | removed: chainId=${counts.chainId} dexId=${counts.dexId} liq=${counts.liquidity} fdv=${counts.fdv} vol=${counts.volume}`);
+
+    // Cap at 20 pairs, sorted by volume descending
+    if (filtered.length > 20) {
+      filtered.sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
+      console.log(`[${new Date().toISOString()}] Capping from ${filtered.length} to 20 pairs (by vol24 desc)`);
+      filtered = filtered.slice(0, 20);
+    }
 
     if (!filtered.length) {
       console.log(`[${new Date().toISOString()}] All pairs filtered out, keeping existing`);
@@ -229,8 +233,8 @@ async function runOhlcvUpdate() {
       pairs.set(addr, existing);
       updated.push(existing);
 
-      // Stagger: 8s between pairs to avoid GeckoTerminal rate limits
-      await new Promise((r) => setTimeout(r, 8000));
+      // Stagger: 10s between pairs to avoid GeckoTerminal rate limits
+      await new Promise((r) => setTimeout(r, 10000));
     } catch (err) {
       console.error(`[${new Date().toISOString()}] OHLCV error for ${addr}:`, err.message);
       if (err.message?.includes("429")) {
