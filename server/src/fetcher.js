@@ -56,8 +56,8 @@ export async function discoverPairs() {
 
   const rawPairs = data?.pairs || [];
   const now = Date.now();
-  const MIN_AGE_MS = 48 * 3600_000;  // 48 hours
-  const MAX_AGE_MS = 480 * 3600_000; // 480 hours
+  const MIN_AGE_MS = 4 * 3600_000;    // 4 hours
+  const MAX_AGE_MS = 1000 * 3600_000; // 1000 hours
 
   console.log(`[${new Date().toISOString()}] Discovery: ${rawPairs.length} raw pairs from API`);
 
