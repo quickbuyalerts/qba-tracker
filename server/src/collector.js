@@ -1,8 +1,9 @@
+import puppeteer from "puppeteer";
 import { computeRSI } from "./rsi.js";
 import { persistState, clearPairs } from "./redis.js";
 
-const DISCOVERY_URL =
-  "https://api.dexscreener.com/latest/dex/search?q=solana&chainIds=solana&dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=2&maxAge=1000&min24HVol=80000&max24HVol=180000";
+const DEXSCREENER_PAGE =
+  "https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=2&maxAge=1000&min24HVol=80000&max24HVol=180000&profile=0&launchpads=1";
 
 const GECKO_OHLCV = (addr) =>
   `https://api.geckoterminal.com/api/v2/networks/solana/pools/${addr}/ohlcv/minute?aggregate=5&limit=100&currency=usd`;
@@ -46,19 +47,80 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// --- Discovery: fetch from Dexscreener, trust results completely ---
+// --- Discovery: scrape Dexscreener with Puppeteer, then fetch pair data ---
+async function scrapePairAddresses() {
+  let browser;
+  try {
+    log("Puppeteer: launching browser...");
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+    });
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    );
+
+    log("Puppeteer: navigating to Dexscreener...");
+    await page.goto(DEXSCREENER_PAGE, { waitUntil: "networkidle2", timeout: 30000 });
+
+    // Wait for pair rows to render
+    await page.waitForSelector("a[href*='/solana/']", { timeout: 15000 });
+
+    // Extract pair addresses from links
+    const addresses = await page.evaluate(() => {
+      const links = document.querySelectorAll("a[href*='/solana/']");
+      const addrs = new Set();
+      for (const link of links) {
+        const match = link.href.match(/\/solana\/([A-Za-z0-9]{20,})/);
+        if (match) addrs.add(match[1]);
+      }
+      return Array.from(addrs);
+    });
+
+    log(`Puppeteer: extracted ${addresses.length} pair addresses`);
+    return addresses;
+  } catch (err) {
+    log(`Puppeteer error: ${err.message}`);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
+async function fetchPairData(addresses) {
+  const results = [];
+  // Batch in groups of 30
+  for (let i = 0; i < addresses.length; i += 30) {
+    const batch = addresses.slice(i, i + 30).join(",");
+    try {
+      const res = await fetch(
+        `https://api.dexscreener.com/latest/dex/pairs/solana/${batch}`,
+        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data?.pairs) results.push(...data.pairs);
+    } catch (err) {
+      log(`Pair fetch error: ${err.message}`);
+    }
+  }
+  return results;
+}
+
 async function runDiscovery() {
   try {
-    const res = await fetch(DISCOVERY_URL, {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const rawPairs = data?.pairs || [];
+    const addresses = await scrapePairAddresses();
+    if (!addresses.length) {
+      log(`Discovery: no addresses scraped, keeping existing ${pairs.size}`);
+      return;
+    }
+
+    const rawPairs = await fetchPairData(addresses);
+    log(`Discovery: ${addresses.length} addresses scraped, ${rawPairs.length} pairs fetched from API`);
 
     if (!rawPairs.length) {
-      log(`Discovery: 0 pairs returned, keeping existing ${pairs.size}`);
+      log(`Discovery: API returned 0 pairs, keeping existing`);
       return;
     }
 
@@ -88,7 +150,6 @@ async function runDiscovery() {
           updatedAt: Date.now(),
         });
       } else {
-        // Update live fields for existing pairs
         const existing = pairs.get(addr);
         existing.priceUsd = raw.priceUsd ? parseFloat(raw.priceUsd) : existing.priceUsd;
         existing.marketCap = raw.marketCap ?? raw.fdv ?? existing.marketCap;
@@ -100,21 +161,21 @@ async function runDiscovery() {
       }
     }
 
-    // Remove pairs no longer returned
+    // Remove pairs no longer on the page
     for (const addr of pairs.keys()) {
       if (!newAddrs.has(addr)) pairs.delete(addr);
     }
 
     lastDiscovery = Date.now();
     collectorStatus = "running";
-    log(`Discovery: ${rawPairs.length} pairs from API, ${pairs.size} tracked`);
+    log(`Discovery: tracking ${pairs.size} pairs`);
     broadcast("update", { pairs: Array.from(pairs.values()), stats: getStats() });
   } catch (err) {
     log(`Discovery error: ${err.message}`);
   }
 }
 
-// --- OHLCV + RSI: fetch candles from GeckoTerminal, 10s stagger ---
+// --- OHLCV + RSI ---
 async function runOhlcvUpdate() {
   const addrs = Array.from(pairs.keys());
   if (!addrs.length) return;
@@ -148,7 +209,6 @@ async function runOhlcvUpdate() {
       p.rsi5m = computeRSI(candles.map((c) => c.c), 14);
       p.rsi15m = computeRSI(aggregate15m(candles), 14);
 
-      // ATH
       const maxH = Math.max(...candles.map((c) => c.h));
       if (p.ath == null || maxH > p.ath) p.ath = maxH;
       if (p.priceUsd && p.priceUsd > p.ath) p.ath = p.priceUsd;
@@ -186,19 +246,12 @@ async function runPersist() {
 // --- Start ---
 export async function startCollector() {
   log("Starting collector...");
-
-  // Clear stale Redis data
   await clearPairs();
-
-  // Initial discovery
   await runDiscovery();
 
-  // Schedule
-  setInterval(runDiscovery, 30_000);
+  setInterval(runDiscovery, 60_000);
   setInterval(runOhlcvUpdate, 60_000);
   setInterval(runPersist, 60_000);
-
-  // First OHLCV after short delay
   setTimeout(runOhlcvUpdate, 5_000);
 
   collectorStatus = "running";

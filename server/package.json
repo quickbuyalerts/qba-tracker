@@ -7,8 +7,9 @@
     "dev": "node --watch src/index.js"
   },
   "dependencies": {
+    "@fastify/cors": "^9.0.1",
     "@upstash/redis": "^1.28.0",
     "fastify": "^4.26.0",
-    "@fastify/cors": "^9.0.1"
+    "puppeteer": "^24.37.5"
   }
 }
