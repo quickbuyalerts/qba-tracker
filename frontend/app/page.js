@@ -57,42 +57,86 @@ function CopyAddress({ addr }) {
   );
 }
 
-function Sparkline({ candles }) {
-  if (!candles || candles.length < 2) {
-    return <span style={{ color: "var(--text-dim)", fontSize: 11 }}>Chart loading...</span>;
-  }
-  const closes = candles.slice(-20).map((c) => c.c);
-  const min = Math.min(...closes);
-  const max = Math.max(...closes);
+// 24h candlestick chart cache
+const ohlcvCache = {};
+
+function CandlestickChart({ pairAddress }) {
+  const [candles, setCandles] = useState(ohlcvCache[pairAddress] || null);
+  const [loading, setLoading] = useState(!ohlcvCache[pairAddress]);
+
+  useEffect(() => {
+    if (ohlcvCache[pairAddress]) {
+      setCandles(ohlcvCache[pairAddress]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `https://api.geckoterminal.com/api/v2/networks/solana/pools/${pairAddress}/ohlcv/hour?aggregate=1&limit=24&currency=usd`
+        );
+        if (!res.ok) throw new Error("fetch failed");
+        const data = await res.json();
+        const list = data?.data?.attributes?.ohlcv_list || [];
+        const parsed = list
+          .slice()
+          .reverse()
+          .map((c) => ({ o: +c[1], h: +c[2], l: +c[3], c: +c[4] }));
+        ohlcvCache[pairAddress] = parsed;
+        if (!cancelled) { setCandles(parsed); setLoading(false); }
+      } catch {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pairAddress]);
+
+  if (loading) return <span style={{ color: "var(--text-dim)", fontSize: 11 }}>Loading...</span>;
+  if (!candles || candles.length < 2) return <span style={{ color: "var(--text-dim)", fontSize: 11 }}>No data</span>;
+
+  const W = 300, H = 150, pad = 8;
+  const allH = candles.map((c) => c.h);
+  const allL = candles.map((c) => c.l);
+  const min = Math.min(...allL);
+  const max = Math.max(...allH);
   const range = max - min || 1;
-  const w = 120;
-  const h = 40;
-  const pad = 2;
-  const points = closes.map((v, i) => {
-    const x = pad + (i / (closes.length - 1)) * (w - pad * 2);
-    const y = pad + (1 - (v - min) / range) * (h - pad * 2);
-    return `${x},${y}`;
-  }).join(" ");
-  const color = closes[closes.length - 1] >= closes[0] ? "var(--accent)" : "var(--red)";
+  const barW = Math.max(2, (W - pad * 2) / candles.length - 2);
+
+  const toY = (v) => pad + (1 - (v - min) / range) * (H - pad * 2);
+
   return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
-      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+      {candles.map((c, i) => {
+        const x = pad + (i / candles.length) * (W - pad * 2) + barW / 2;
+        const up = c.c >= c.o;
+        const color = up ? "var(--accent)" : "var(--red)";
+        const bodyTop = toY(Math.max(c.o, c.c));
+        const bodyBot = toY(Math.min(c.o, c.c));
+        const bodyH = Math.max(1, bodyBot - bodyTop);
+        return (
+          <g key={i}>
+            <line x1={x} x2={x} y1={toY(c.h)} y2={toY(c.l)} stroke={color} strokeWidth="1" />
+            <rect x={x - barW / 2} y={bodyTop} width={barW} height={bodyH} fill={color} />
+          </g>
+        );
+      })}
     </svg>
   );
 }
 
 function getRsiClass(rsi) {
   if (rsi == null) return "neutral";
-  if (rsi > 70) return "overbought";
-  if (rsi < 30) return "oversold";
-  return "neutral";
+  if (rsi >= 25 && rsi <= 55) return "rsi-good";
+  if (rsi > 55) return "overbought";
+  return "rsi-low";
 }
 
 function getRsiBarColor(rsi) {
   if (rsi == null) return "var(--border)";
-  if (rsi > 70) return "var(--red)";
-  if (rsi < 30) return "var(--accent)";
-  return "var(--blue)";
+  if (rsi >= 25 && rsi <= 55) return "var(--accent)";
+  if (rsi > 55) return "var(--red)";
+  return "var(--text-dim)";
 }
 
 function getAthClass(pctFromAth) {
@@ -301,7 +345,7 @@ export default function Home() {
         <span className="filter-tag">SOL</span>
         <span className="filter-tag">PumpSwap + PumpFun</span>
         <span className="filter-tag">Liq &gt; $10K</span>
-        <span className="filter-tag">MCap &gt; $30K</span>
+        <span className="filter-tag">MCap $30K-$300K</span>
         <span className="filter-tag">Age 2-1000h</span>
         <span className="filter-tag">24h Vol $80K-$180K</span>
         <span style={{ marginLeft: "auto", color: "var(--text-dim)" }}>
@@ -446,7 +490,7 @@ export default function Home() {
                       {formatAge(pair.pairCreatedAt)}
                       {hoveredRow === pair.pairAddress && (
                         <div className="sparkline-popup">
-                          <Sparkline candles={pair.candles5m} />
+                          <CandlestickChart pairAddress={pair.pairAddress} />
                         </div>
                       )}
                     </td>

@@ -99,17 +99,17 @@ async function runDiscovery() {
       const dex = (p.dexId || "").toLowerCase();
       if (dex !== "pumpswap" && dex !== "pumpfun") { counts.dexId++; return false; }
       if (typeof p.liquidity?.usd !== "number" || p.liquidity.usd < 10000) { counts.liquidity++; return false; }
-      if (typeof p.fdv !== "number" || p.fdv < 30000) { counts.fdv++; return false; }
+      if (typeof p.fdv !== "number" || p.fdv < 30000 || p.fdv > 300000) { counts.fdv++; return false; }
       if (typeof p.volume?.h24 !== "number" || p.volume.h24 < 80000 || p.volume.h24 > 180000) { counts.volume++; return false; }
       return true;
     });
     console.log(`[${new Date().toISOString()}] Filter: ${counts.total} raw → ${filtered.length} passed | removed: chainId=${counts.chainId} dexId=${counts.dexId} liq=${counts.liquidity} fdv=${counts.fdv} vol=${counts.volume}`);
 
-    // Cap at 20 pairs, sorted by volume descending
-    if (filtered.length > 20) {
+    // Cap at 30 pairs, sorted by volume descending
+    if (filtered.length > 30) {
       filtered.sort((a, b) => (b.volume?.h24 ?? 0) - (a.volume?.h24 ?? 0));
-      console.log(`[${new Date().toISOString()}] Capping from ${filtered.length} to 20 pairs (by vol24 desc)`);
-      filtered = filtered.slice(0, 20);
+      console.log(`[${new Date().toISOString()}] Capping from ${filtered.length} to 30 pairs (by vol24 desc)`);
+      filtered = filtered.slice(0, 30);
     }
 
     if (!filtered.length) {
@@ -250,20 +250,7 @@ async function runOhlcvUpdate() {
   }
   console.log(`[${new Date().toISOString()}] OHLCV updated for ${updated.length} pairs`);
 
-  // RSI filter: remove pairs where RSI is outside 25-35 range
-  // Only filter if both RSI values have been calculated
-  let rsiRemoved = 0;
-  for (const [addr, p] of pairs) {
-    if (p.rsi5m == null || p.rsi15m == null) continue;
-    if (p.rsi5m < 25 || p.rsi5m > 35 || p.rsi15m < 25 || p.rsi15m > 35) {
-      pairs.delete(addr);
-      rsiRemoved++;
-    }
-  }
-  if (rsiRemoved > 0) {
-    console.log(`[${new Date().toISOString()}] RSI filter removed ${rsiRemoved} pairs, ${pairs.size} remaining`);
-    broadcast("snapshot", getSnapshot());
-  }
+  // No RSI filtering — display all pairs with their RSI values
 }
 
 function aggregate15m(candles5m) {
