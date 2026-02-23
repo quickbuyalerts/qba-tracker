@@ -1,10 +1,9 @@
-import puppeteer from "puppeteer";
 import { computeRSI } from "./rsi.js";
 import { persistState, clearPairs } from "./redis.js";
 
-const DEXSCREENER_PAGE =
-  "https://dexscreener.com/?rankBy=trendingScoreH6&order=desc&chainIds=solana&dexIds=pumpswap,pumpfun&minLiq=10000&minMarketCap=30000&minAge=2&maxAge=1000&min24HVol=80000&max24HVol=180000&profile=0&launchpads=1";
-
+const BOOSTS_URL = "https://api.dexscreener.com/token-boosts/top/v1";
+const TOKENS_URL = (addrs) =>
+  `https://api.dexscreener.com/latest/dex/tokens/${addrs}`;
 const GECKO_OHLCV = (addr) =>
   `https://api.geckoterminal.com/api/v2/networks/solana/pools/${addr}/ohlcv/minute?aggregate=5&limit=100&currency=usd`;
 
@@ -47,85 +46,101 @@ function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// --- Discovery: scrape Dexscreener with Puppeteer, then fetch pair data ---
-async function scrapePairAddresses() {
-  let browser;
-  try {
-    log("Puppeteer: launching browser...");
-    browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-    });
-    const page = await browser.newPage();
-    await page.setUserAgent(
-      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    );
-
-    log("Puppeteer: navigating to Dexscreener...");
-    await page.goto(DEXSCREENER_PAGE, { waitUntil: "networkidle2", timeout: 30000 });
-
-    // Wait for pair rows to render
-    await page.waitForSelector("a[href*='/solana/']", { timeout: 15000 });
-
-    // Extract pair addresses from links
-    const addresses = await page.evaluate(() => {
-      const links = document.querySelectorAll("a[href*='/solana/']");
-      const addrs = new Set();
-      for (const link of links) {
-        const match = link.href.match(/\/solana\/([A-Za-z0-9]{20,})/);
-        if (match) addrs.add(match[1]);
-      }
-      return Array.from(addrs);
-    });
-
-    log(`Puppeteer: extracted ${addresses.length} pair addresses`);
-    return addresses;
-  } catch (err) {
-    log(`Puppeteer error: ${err.message}`);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
+// --- Step 1: Fetch boosted/trending tokens ---
+async function fetchBoostedTokens() {
+  const res = await fetch(BOOSTS_URL, {
+    headers: { Accept: "application/json" },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`Boosts API HTTP ${res.status}`);
+  const data = await res.json();
+  return data; // array of { url, chainId, tokenAddress, icon, ... }
 }
 
-async function fetchPairData(addresses) {
+// --- Step 2: Filter for Solana, extract token addresses ---
+function extractSolanaTokenAddresses(boosts) {
+  const addrs = [];
+  const seen = new Set();
+  for (const b of boosts) {
+    if (b.chainId !== "solana") continue;
+    const addr = b.tokenAddress;
+    if (addr && !seen.has(addr)) {
+      seen.add(addr);
+      addrs.push(addr);
+    }
+  }
+  return addrs;
+}
+
+// --- Step 3: Batch lookup pairs for those tokens ---
+async function fetchPairsForTokens(tokenAddresses) {
   const results = [];
-  // Batch in groups of 30
-  for (let i = 0; i < addresses.length; i += 30) {
-    const batch = addresses.slice(i, i + 30).join(",");
+  // Dexscreener allows up to 30 addresses per request
+  for (let i = 0; i < tokenAddresses.length; i += 30) {
+    const batch = tokenAddresses.slice(i, i + 30).join(",");
     try {
-      const res = await fetch(
-        `https://api.dexscreener.com/latest/dex/pairs/solana/${batch}`,
-        { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(15000) }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(TOKENS_URL(batch), {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!res.ok) throw new Error(`Tokens API HTTP ${res.status}`);
       const data = await res.json();
       if (data?.pairs) results.push(...data.pairs);
     } catch (err) {
-      log(`Pair fetch error: ${err.message}`);
+      log(`Token batch fetch error: ${err.message}`);
     }
   }
   return results;
 }
 
+// --- Step 4: Strict filtering ---
+function filterPairs(rawPairs) {
+  return rawPairs.filter((p) => {
+    if (p.chainId !== "solana") return false;
+    if (p.dexId !== "pumpswap" && p.dexId !== "pumpfun") return false;
+    if (!(p.liquidity?.usd >= 10000)) return false;
+    if (!(p.fdv >= 30000 && p.fdv <= 300000)) return false;
+    if (!(p.volume?.h24 >= 80000 && p.volume?.h24 <= 180000)) return false;
+    return true;
+  });
+}
+
+// --- Discovery ---
 async function runDiscovery() {
   try {
-    const addresses = await scrapePairAddresses();
-    if (!addresses.length) {
-      log(`Discovery: no addresses scraped, keeping existing ${pairs.size}`);
+    // Step 1
+    const boosts = await fetchBoostedTokens();
+    log(`Boosts: fetched ${boosts.length} boosted tokens`);
+
+    // Step 2
+    const solanaAddrs = extractSolanaTokenAddresses(boosts);
+    log(`Boosts: ${solanaAddrs.length} unique Solana token addresses`);
+
+    if (!solanaAddrs.length) {
+      log(`Discovery: no Solana tokens found, keeping existing ${pairs.size}`);
       return;
     }
 
-    const rawPairs = await fetchPairData(addresses);
-    log(`Discovery: ${addresses.length} addresses scraped, ${rawPairs.length} pairs fetched from API`);
+    // Step 3
+    const rawPairs = await fetchPairsForTokens(solanaAddrs);
+    log(`Discovery: ${rawPairs.length} total pairs returned from token lookup`);
 
-    if (!rawPairs.length) {
-      log(`Discovery: API returned 0 pairs, keeping existing`);
+    // Step 4
+    const filtered = filterPairs(rawPairs);
+    log(`Discovery: ${filtered.length} pairs passed filters`);
+
+    // Step 5 - Log token names that passed
+    for (const p of filtered) {
+      log(`  PASS: ${p.baseToken?.symbol} (${p.baseToken?.name}) | dex=${p.dexId} liq=$${p.liquidity?.usd} fdv=$${p.fdv} vol24h=$${p.volume?.h24} | ${p.pairAddress}`);
+    }
+
+    if (!filtered.length) {
+      log(`Discovery: 0 pairs passed filters, keeping existing ${pairs.size}`);
       return;
     }
 
     const newAddrs = new Set();
-    for (const raw of rawPairs) {
+    for (const raw of filtered) {
       const addr = raw.pairAddress;
       if (!addr) continue;
       newAddrs.add(addr);
@@ -161,7 +176,7 @@ async function runDiscovery() {
       }
     }
 
-    // Remove pairs no longer on the page
+    // Remove pairs no longer passing filters
     for (const addr of pairs.keys()) {
       if (!newAddrs.has(addr)) pairs.delete(addr);
     }
